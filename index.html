@@ -245,18 +245,20 @@
 // =====================================================================
 // true  -> datos inventados, para probar la página sin nevera ni Firebase
 // false -> datos reales desde Firebase (los escribe el ESP32)
-const SIMULADO = true;
+const SIMULADO = false;
 
 // Pega aquí la configuración de tu proyecto de Firebase
 // (Consola de Firebase -> Configuración del proyecto -> Tus apps -> App web)
 const FIREBASE_CONFIG = {
-  apiKey: "PEGA_AQUI",
-  authDomain: "PEGA_AQUI",
-  databaseURL: "PEGA_AQUI",
-  projectId: "PEGA_AQUI",
-  appId: "PEGA_AQUI",
+  apiKey: "AIzaSyAAHNrAJwAFl9odgfCQwMSiu7Qnmn1AipU",
+  authDomain: "vinoteca-19133.firebaseapp.com",
+  databaseURL: "https://vinoteca-19133-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "vinoteca-19133",
+  storageBucket: "vinoteca-19133.firebasestorage.app",
+  messagingSenderId: "672616079003",
+  appId: "1:672616079003:web:16839dbff649b762b3f03e",
 };
-const FIREBASE_VERSION = "13.1.0";
+const FIREBASE_VERSION = "13.2.0";
 
 const AVISO_PUERTA_S = 30;   // segundos con la puerta abierta antes de avisar
 const NEVERA_CAIDA_S = 20;   // si el ESP32 no actualiza en este tiempo -> "Nevera desconectada"
