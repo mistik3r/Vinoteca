@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vinoteca inteligente</title>
+<!--
+  VINOTECA INTELIGENTE - página web del prototipo
+  ------------------------------------------------
+  SIMULADO = true  -> datos inventados (para probar sin nevera)
+  SIMULADO = false -> datos reales desde Firebase Realtime Database:
+      vinoteca/estado  lo escribe el ESP32 (temperaturas, puerta, vibración, actualizado)
+      vinoteca/stock   lo escriben esta web y la Nextion ({"martin_codax": 3, ...})
+  Los "id" de los vinos deben coincidir con las clases de Teachable Machine.
+-->
+<style>
+  :root {
+    --bg: #14090c;
+    --card: #22131a;
+    --card2: #2c1a22;
+    --line: #3d2630;
+    --text: #f4ebe6;
+    --muted: #b59ea6;
+    --tinto: #c0304a;
+    --blanco: #e6c86e;
+    --ok: #5fbf7f;
+    --warn: #f0a43a;
+    --bad: #e5534b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-tap-highlight-color: transparent;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5;
+    background: rgba(20, 9, 12, .96);
+    padding: 14px 16px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.2rem; margin: 0; }
+  h1 span { color: var(--tinto); }
+  .badge { font-size: .75rem; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+  .badge.sim { background: #3a2a10; color: var(--warn); }
+  .badge.on  { background: #163a24; color: var(--ok); }
+  .badge.off { background: #3a1616; color: var(--bad); }
+  nav { display: flex; gap: 2px; margin: 10px auto 0; max-width: 720px; }
+  nav button {
+    flex: 1; background: none; border: none; color: var(--muted);
+    padding: 10px 4px; font-size: .9rem; cursor: pointer;
+    border-bottom: 3px solid transparent;
+  }
+  nav button.activo { color: var(--text); border-bottom-color: var(--tinto); }
+
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  section { display: none; }
+  section.activo { display: block; }
+  h2 { font-size: 1rem; margin: 22px 0 10px; color: var(--muted); font-weight: 600; }
+  h2:first-child { margin-top: 0; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  .card h3 { margin: 0 0 6px; font-size: .72rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .big { font-size: 2.1rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .mid { font-size: 1.4rem; font-weight: 700; line-height: 1.2; }
+  .sub { font-size: .82rem; color: var(--muted); margin-top: 4px; }
+  .zona-tinto  { border-left: 4px solid var(--tinto); }
+  .zona-blanco { border-left: 4px solid var(--blanco); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+
+  .alerta {
+    display: none; margin-bottom: 12px; padding: 12px 14px; border-radius: 12px;
+    background: #3a1616; border: 1px solid var(--bad); font-weight: 600;
+  }
+  .alerta.visible { display: block; animation: latido 1.2s infinite; }
+  @keyframes latido { 50% { opacity: .65; } }
+
+  .btn {
+    background: var(--card2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 16px; font-size: .95rem; cursor: pointer;
+  }
+  .btn.prim { background: var(--tinto); border-color: var(--tinto); font-weight: 600; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .fila-btn { display: flex; gap: 10px; flex-wrap: wrap; }
+  .fila-btn .btn { flex: 1; }
+  .sim-ctrl { margin-top: 16px; padding: 12px; border: 1px dashed #5a4420; border-radius: 12px; }
+  .sim-ctrl p { margin: 0 0 8px; font-size: .8rem; color: var(--warn); }
+
+  /* Stock */
+  .vino { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .vino:last-child { border-bottom: none; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .dot.tinto { background: var(--tinto); }
+  .dot.blanco { background: var(--blanco); }
+  .info { flex: 1; min-width: 0; }
+  .nombre { font-weight: 600; }
+  .det { font-size: .8rem; color: var(--muted); margin-top: 2px; }
+  .ctrl { display: flex; align-items: center; gap: 8px; }
+  .ctrl button {
+    width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--card2); color: var(--text); font-size: 1.2rem; cursor: pointer;
+  }
+  .ctrl button:disabled { opacity: .3; cursor: default; }
+  .cant { min-width: 26px; text-align: center; font-weight: 700; font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+  .cant.cero { color: var(--muted); font-weight: 400; }
+
+  /* Escanear */
+  .visor {
+    aspect-ratio: 3 / 4; max-height: 52vh; width: 100%; margin: 0 auto 14px;
+    border-radius: 16px; border: 2px dashed var(--line); background: #0d0507;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    color: var(--muted); padding: 20px; position: relative; overflow: hidden;
+  }
+  .visor.analizando::after {
+    content: ""; position: absolute; left: 0; right: 0; height: 3px; background: var(--tinto);
+    box-shadow: 0 0 14px var(--tinto); animation: barrido 1.2s linear infinite;
+  }
+  @keyframes barrido { from { top: 0; } to { top: 100%; } }
+  .resultado { display: none; }
+  .resultado.visible { display: block; }
+  .confianza { height: 6px; background: var(--card2); border-radius: 3px; margin: 10px 0 4px; overflow: hidden; }
+  .confianza div { height: 100%; background: var(--ok); }
+
+  /* Maridaje */
+  .comidas { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .comida { text-align: left; }
+  .comida.activo { border-color: var(--tinto); background: #3a1620; }
+  .rec { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .rec:last-child { border-bottom: none; }
+  .nota { font-size: .85rem; margin-top: 4px; }
+  .vacio { color: var(--muted); font-size: .9rem; padding: 8px 0; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%) translateY(120px);
+    background: var(--card2); border: 1px solid var(--line); padding: 12px 18px; border-radius: 12px;
+    transition: transform .25s; max-width: 90vw; z-index: 10;
+  }
+  .toast.visible { transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="top">
+    <h1>🍷 Vinoteca <span>inteligente</span></h1>
+    <span id="conexion" class="badge sim">Simulado</span>
+  </div>
+  <nav>
+    <button class="activo" data-tab="panel">Panel</button>
+    <button data-tab="stock">Stock</button>
+    <button data-tab="escanear">Escanear</button>
+    <button data-tab="maridaje">Maridaje</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ PANEL ============ -->
+  <section id="panel" class="activo">
+    <div id="alertaPuerta" class="alerta">⚠️ La puerta lleva abierta <span id="alertaSeg">0</span> s</div>
+
+    <div class="grid">
+      <div class="card zona-tinto">
+        <h3>Arriba · Tintos</h3>
+        <div class="big" id="tArriba">--.-°</div>
+        <div class="sub">Objetivo <span id="oArriba">--</span> °C · <span id="eArriba">--</span></div>
+      </div>
+      <div class="card zona-blanco">
+        <h3>Abajo · Blancos</h3>
+        <div class="big" id="tAbajo">--.-°</div>
+        <div class="sub">Objetivo <span id="oAbajo">--</span> °C · <span id="eAbajo">--</span></div>
+      </div>
+      <div class="card">
+        <h3>Puerta</h3>
+        <div class="mid" id="puerta">--</div>
+        <div class="sub" id="puertaSub">&nbsp;</div>
+      </div>
+      <div class="card">
+        <h3>Vibración</h3>
+        <div class="mid" id="vib">--</div>
+        <div class="sub" id="vibSub">&nbsp;</div>
+      </div>
+    </div>
+
+    <h2>Botellas</h2>
+    <div class="grid">
+      <div class="card zona-tinto"><h3>Tintos</h3><div class="big" id="nTintos">0</div></div>
+      <div class="card zona-blanco"><h3>Blancos</h3><div class="big" id="nBlancos">0</div></div>
+    </div>
+
+    <div id="simCtrl" class="sim-ctrl">
+      <p>Controles de simulación (solo en modo simulado)</p>
+      <div class="fila-btn">
+        <button class="btn" id="simPuerta">Abrir puerta</button>
+        <button class="btn" id="simVib">Provocar vibración</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STOCK ============ -->
+  <section id="stock">
+    <h2>Arriba · Tintos</h2>
+    <div class="card" id="listaTintos"></div>
+    <h2>Abajo · Blancos</h2>
+    <div class="card" id="listaBlancos"></div>
+  </section>
+
+  <!-- ============ ESCANEAR ============ -->
+  <section id="escanear">
+    <div class="visor" id="visor">
+      <div>📷<br><br>Aquí irá la imagen de la cámara del móvil.<br>
+        <small>(De momento el reconocimiento está simulado: Teachable Machine se conectará aquí.)</small></div>
+    </div>
+    <button class="btn prim" id="btnEscanear" style="width:100%">Escanear botella</button>
+
+    <div class="card resultado" id="resultado" style="margin-top:14px">
+      <h3>Botella reconocida</h3>
+      <div class="mid" id="rNombre"></div>
+      <div class="sub" id="rDet"></div>
+      <div class="confianza"><div id="rBarra"></div></div>
+      <div class="sub" id="rConf"></div>
+      <div class="fila-btn" style="margin-top:12px">
+        <button class="btn prim" id="rMeter">Meter en la nevera</button>
+        <button class="btn" id="rSacar">Sacar</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MARIDAJE ============ -->
+  <section id="maridaje">
+    <h2>¿Qué vas a cenar?</h2>
+    <div class="comidas" id="comidas"></div>
+    <div id="recomendacion"></div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script type="module">
+// =====================================================================
+// CONFIGURACIÓN
+// =====================================================================
+// true  -> datos inventados, para probar la página sin nevera ni Firebase
+// false -> datos reales desde Firebase (los escribe el ESP32)
+const SIMULADO = true;
+
+// Pega aquí la configuración de tu proyecto de Firebase
+// (Consola de Firebase -> Configuración del proyecto -> Tus apps -> App web)
+const FIREBASE_CONFIG = {
+  apiKey: "PEGA_AQUI",
+  authDomain: "PEGA_AQUI",
+  databaseURL: "PEGA_AQUI",
+  projectId: "PEGA_AQUI",
+  appId: "PEGA_AQUI",
+};
+const FIREBASE_VERSION = "13.1.0";
+
+const AVISO_PUERTA_S = 30;   // segundos con la puerta abierta antes de avisar
+const NEVERA_CAIDA_S = 20;   // si el ESP32 no actualiza en este tiempo -> "Nevera desconectada"
+const SIM_PASO_MS = 2000;    // ritmo de la simulación
+
+// =====================================================================
+// BASE DE DATOS DE DEMOSTRACIÓN
+// "id" = nombre de la clase en Teachable Machine (sin espacios ni tildes)
+// =====================================================================
+const CATALOGO = [
+  { id: "marques_caceres", nombre: "Marqués de Cáceres Crianza", bodega: "Marqués de Cáceres",
+    tipo: "tinto", origen: "D.O.Ca. Rioja", uva: "Tempranillo", servicio: "16-18 °C",
+    marida: ["carne_roja", "embutido", "queso", "pasta"],
+    nota: "Clásico de Rioja, con notas de madera y fruta madura." },
+  { id: "protos_roble", nombre: "Protos Roble", bodega: "Protos",
+    tipo: "tinto", origen: "D.O. Ribera del Duero", uva: "Tinto Fino", servicio: "15-17 °C",
+    marida: ["carne_roja", "carne_blanca", "pasta", "embutido"],
+    nota: "Joven y afrutado, muy versátil." },
+  { id: "juan_gil", nombre: "Juan Gil Monastrell", bodega: "Bodegas Juan Gil",
+    tipo: "tinto", origen: "D.O.P. Jumilla", uva: "Monastrell", servicio: "16-18 °C",
+    marida: ["carne_roja", "queso", "embutido"],
+    nota: "Potente y especiado, ideal con carnes a la brasa." },
+  { id: "martin_codax", nombre: "Martín Códax Albariño", bodega: "Martín Códax",
+    tipo: "blanco", origen: "D.O. Rías Baixas", uva: "Albariño", servicio: "8-10 °C",
+    marida: ["marisco", "pescado", "arroz"],
+    nota: "Fresco y salino, el compañero perfecto del marisco." },
+  { id: "jose_pariente", nombre: "José Pariente Verdejo", bodega: "Bodegas José Pariente",
+    tipo: "blanco", origen: "D.O. Rueda", uva: "Verdejo", servicio: "8-10 °C",
+    marida: ["pescado", "carne_blanca", "arroz", "pasta"],
+    nota: "Aromático, con toques herbáceos y final amargo agradable." },
+  { id: "vina_esmeralda", nombre: "Viña Esmeralda", bodega: "Familia Torres",
+    tipo: "blanco", origen: "D.O. Catalunya", uva: "Moscatel y Gewürztraminer", servicio: "7-9 °C",
+    marida: ["picante", "marisco", "postre"],
+    nota: "Floral y ligeramente dulce, va muy bien con comida picante o asiática." },
+];
+
+const COMIDAS = [
+  { id: "carne_roja",   nombre: "🥩 Carne roja" },
+  { id: "carne_blanca", nombre: "🍗 Pollo / cerdo" },
+  { id: "pescado",      nombre: "🐟 Pescado" },
+  { id: "marisco",      nombre: "🦐 Marisco" },
+  { id: "arroz",        nombre: "🥘 Arroz / paella" },
+  { id: "pasta",        nombre: "🍝 Pasta" },
+  { id: "queso",        nombre: "🧀 Queso curado" },
+  { id: "embutido",     nombre: "🥓 Embutido" },
+  { id: "picante",      nombre: "🌶️ Picante / asiática" },
+  { id: "postre",       nombre: "🍰 Postre" },
+];
+
+const vinoPorId = Object.fromEntries(CATALOGO.map(v => [v.id, v]));
+const compartimento = tipo => tipo === "tinto" ? "arriba" : "abajo";
+
+// =====================================================================
+// ESTADO
+// =====================================================================
+let estado = SIMULADO ? {
+  arriba: { temp: 15.4, objetivo: 15 },
+  abajo:  { temp: 9.3,  objetivo: 9 },
+  puerta: { abierta: false, segundos: 0 },
+  vibracion: 0.02,
+  actualizado: null,
+  stock: { marques_caceres: 2, protos_roble: 1, juan_gil: 0, martin_codax: 3, jose_pariente: 1, vina_esmeralda: 0 },
+} : {
+  arriba: { temp: null, objetivo: null },
+  abajo:  { temp: null, objetivo: null },
+  puerta: { abierta: false, segundos: 0 },
+  vibracion: null,
+  actualizado: null,
+  stock: {},
+};
+let picoVibracion = 0;
+
+function simularPaso() {
+  const seg = SIM_PASO_MS / 1000;
+  for (const z of ["arriba", "abajo"]) {
+    const c = estado[z];
+    if (estado.puerta.abierta) c.temp += 0.15 * seg;               // entra calor
+    else c.temp += (c.objetivo - c.temp) * 0.08 * seg;             // el frío lo corrige
+    c.temp += (Math.random() - 0.5) * 0.1;                         // ruido del sensor
+    c.temp = Math.round(c.temp * 10) / 10;
+  }
+  estado.puerta.segundos = estado.puerta.abierta ? estado.puerta.segundos + seg : 0;
+  estado.vibracion = 0.01 + Math.random() * 0.03 + picoVibracion;
+  picoVibracion *= 0.5;
+}
+
+// =====================================================================
+// CONEXIÓN (simulación o Firebase)
+// Estructura en Firebase:
+//   vinoteca/estado -> lo escribe el ESP32 (temperaturas, puerta, vibración, actualizado)
+//   vinoteca/stock  -> lo escriben la web y la Nextion (botellas por vino)
+// =====================================================================
+let fb = null, db = null;
+let conectadoInternet = false, offsetServidor = 0;
+
+const api = {
+  async iniciar() {
+    if (SIMULADO) {
+      pintarTodo(true);
+      setInterval(() => { simularPaso(); pintarTodo(); }, SIM_PASO_MS);
+      return;
+    }
+    const base = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
+    const { initializeApp } = await import(`${base}/firebase-app.js`);
+    fb = await import(`${base}/firebase-database.js`);
+    db = fb.getDatabase(initializeApp(FIREBASE_CONFIG));
+
+    fb.onValue(fb.ref(db, ".info/connected"), s => { conectadoInternet = s.val() === true; pintarConexion(); });
+    fb.onValue(fb.ref(db, ".info/serverTimeOffset"), s => { offsetServidor = s.val() || 0; });
+    fb.onValue(fb.ref(db, "vinoteca"), s => {
+      const d = s.val() || {};
+      if (d.estado) Object.assign(estado, d.estado);
+      estado.stock = d.stock || {};
+      pintarTodo();
+    });
+    setInterval(pintarConexion, 1000);
+  },
+
+  async cambiarStock(id, delta) {
+    if (SIMULADO) {
+      estado.stock[id] = Math.max(0, (estado.stock[id] || 0) + delta);
+      pintarTodo(true);
+      return;
+    }
+    // Transacción: si la Nextion y el móvil cambian a la vez, no se pierde ninguna botella
+    await fb.runTransaction(fb.ref(db, `vinoteca/stock/${id}`), n => Math.max(0, (n || 0) + delta));
+  },
+};
+
+// =====================================================================
+// RECONOCIMIENTO DE BOTELLAS
+// Aquí se conectará Teachable Machine. Debe devolver { id, confianza }.
+// =====================================================================
+async function reconocerBotella() {
+  await new Promise(r => setTimeout(r, 1500));  // simula el tiempo de análisis
+  const v = CATALOGO[Math.floor(Math.random() * CATALOGO.length)];
+  return { id: v.id, confianza: 0.85 + Math.random() * 0.14 };
+}
+
+// =====================================================================
+// INTERFAZ
+// =====================================================================
+const $ = id => document.getElementById(id);
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("visible");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("visible"), 2500);
+}
+
+function estadoTemp(c) {
+  if (c.temp == null || c.objetivo == null) return ["Sin datos", ""];
+  const d = Math.abs(c.temp - c.objetivo);
+  if (d <= 1) return ["En rango", "ok"];
+  if (d <= 3) return ["Ajustando", "warn"];
+  return ["Fuera de rango", "bad"];
+}
+
+function pintarConexion() {
+  const b = $("conexion");
+  if (SIMULADO) { b.textContent = "Simulado"; b.className = "badge sim"; return; }
+  if (!conectadoInternet) { b.textContent = "Sin internet"; b.className = "badge off"; return; }
+  const edad = estado.actualizado ? (Date.now() + offsetServidor - estado.actualizado) / 1000 : Infinity;
+  if (edad > NEVERA_CAIDA_S) { b.textContent = "Nevera desconectada"; b.className = "badge off"; }
+  else { b.textContent = "Nevera conectada"; b.className = "badge on"; }
+}
+
+function pintarPanel() {
+  for (const [z, T, O, E] of [["arriba", "tArriba", "oArriba", "eArriba"], ["abajo", "tAbajo", "oAbajo", "eAbajo"]]) {
+    const c = estado[z] || {};
+    const [txt, cls] = estadoTemp(c);
+    $(T).textContent = c.temp == null ? "--.-°" : Number(c.temp).toFixed(1) + "°";
+    $(T).className = "big " + cls;
+    $(O).textContent = c.objetivo ?? "--";
+    $(E).textContent = txt;
+  }
+
+  const p = estado.puerta || { abierta: false, segundos: 0 };
+  $("puerta").textContent = p.abierta ? "Abierta" : "Cerrada";
+  $("puerta").className = "mid " + (p.abierta ? (p.segundos >= AVISO_PUERTA_S ? "bad" : "warn") : "ok");
+  $("puertaSub").textContent = p.abierta ? `Hace ${Math.round(p.segundos)} s` : "Todo bien";
+  $("alertaPuerta").classList.toggle("visible", p.abierta && p.segundos >= AVISO_PUERTA_S);
+  $("alertaSeg").textContent = Math.round(p.segundos);
+  $("simPuerta").textContent = p.abierta ? "Cerrar puerta" : "Abrir puerta";
+
+  const v = estado.vibracion;
+  if (v == null) {
+    $("vib").textContent = "--"; $("vib").className = "mid"; $("vibSub").textContent = "Sin datos";
+  } else {
+    const [vt, vc] = v < 0.05 ? ["Baja", "ok"] : v < 0.15 ? ["Media", "warn"] : ["Alta", "bad"];
+    $("vib").textContent = vt;
+    $("vib").className = "mid " + vc;
+    $("vibSub").textContent = Number(v).toFixed(2) + " g";
+  }
+
+  let tintos = 0, blancos = 0;
+  for (const [id, n] of Object.entries(estado.stock)) {
+    const vino = vinoPorId[id];
+    if (!vino) continue;
+    if (vino.tipo === "tinto") tintos += n; else blancos += n;
+  }
+  $("nTintos").textContent = tintos;
+  $("nBlancos").textContent = blancos;
+}
+
+let ultimoStock = "";
+function pintarStock(forzar) {
+  const firma = JSON.stringify(estado.stock);
+  if (!forzar && firma === ultimoStock) return;   // no repintar si no ha cambiado
+  ultimoStock = firma;
+
+  for (const [tipo, cont] of [["tinto", "listaTintos"], ["blanco", "listaBlancos"]]) {
+    $(cont).innerHTML = CATALOGO.filter(v => v.tipo === tipo).map(v => {
+      const n = estado.stock[v.id] || 0;
+      return `<div class="vino">
+        <span class="dot ${v.tipo}"></span>
+        <div class="info">
+          <div class="nombre">${v.nombre}</div>
+          <div class="det">${v.origen} · ${v.uva} · servir a ${v.servicio}</div>
+        </div>
+        <div class="ctrl">
+          <button data-id="${v.id}" data-d="-1" ${n === 0 ? "disabled" : ""} aria-label="Sacar">−</button>
+          <span class="cant ${n === 0 ? "cero" : ""}">${n}</span>
+          <button data-id="${v.id}" data-d="1" aria-label="Añadir">+</button>
+        </div>
+      </div>`;
+    }).join("");
+  }
+  if (comidaActiva) pintarMaridaje(comidaActiva);
+}
+
+function pintarTodo(forzarStock) {
+  pintarPanel();
+  pintarStock(forzarStock);
+  pintarConexion();
+}
+
+async function cambiarStock(id, delta) {
+  try {
+    await api.cambiarStock(id, delta);
+    const v = vinoPorId[id];
+    toast(delta > 0 ? `Añadido: ${v.nombre} → ${compartimento(v.tipo)}` : `Sacado: ${v.nombre}`);
+  } catch (e) {
+    console.error(e);
+    toast("No se pudo guardar el cambio");
+  }
+}
+
+let comidaActiva = null;
+function pintarMaridaje(comidaId) {
+  comidaActiva = comidaId;
+  document.querySelectorAll(".comida").forEach(b => b.classList.toggle("activo", b.dataset.c === comidaId));
+  const candidatos = CATALOGO.filter(v => v.marida.includes(comidaId));
+  const enNevera = candidatos.filter(v => (estado.stock[v.id] || 0) > 0);
+  const sinStock = candidatos.filter(v => !(estado.stock[v.id] > 0));
+
+  const fila = v => `<div class="rec">
+    <div class="nombre"><span class="dot ${v.tipo}" style="display:inline-block;margin-right:6px"></span>${v.nombre}</div>
+    <div class="det">${v.tipo === "tinto" ? "Tinto" : "Blanco"} · compartimento de ${compartimento(v.tipo)} · ${estado.stock[v.id] || 0} en la nevera · servir a ${v.servicio}</div>
+    <div class="nota">${v.nota}</div>
+  </div>`;
+
+  $("recomendacion").innerHTML =
+    `<h2>En tu nevera</h2><div class="card">${enNevera.length ? enNevera.map(fila).join("") :
+      '<div class="vacio">No tienes ningún vino que encaje con esta comida.</div>'}</div>` +
+    (sinStock.length ? `<h2>Para la próxima compra</h2><div class="card">${sinStock.map(fila).join("")}</div>` : "");
+}
+
+// ---------- Escáner ----------
+let reconocido = null;
+async function escanear() {
+  const btn = $("btnEscanear");
+  btn.disabled = true;
+  btn.textContent = "Analizando…";
+  $("visor").classList.add("analizando");
+  $("resultado").classList.remove("visible");
+  try {
+    const r = await reconocerBotella();
+    const v = vinoPorId[r.id];
+    if (!v) throw new Error("Botella desconocida");
+    reconocido = v;
+    $("rNombre").textContent = v.nombre;
+    $("rDet").textContent = `${v.tipo === "tinto" ? "Tinto" : "Blanco"} · ${v.origen} · va al compartimento de ${compartimento(v.tipo)}`;
+    $("rBarra").style.width = Math.round(r.confianza * 100) + "%";
+    $("rConf").textContent = `Confianza: ${Math.round(r.confianza * 100)} %`;
+    $("rSacar").disabled = !(estado.stock[v.id] > 0);
+    $("resultado").classList.add("visible");
+  } catch (e) {
+    toast("No he reconocido la botella. Prueba otra vez.");
+  } finally {
+    $("visor").classList.remove("analizando");
+    btn.disabled = false;
+    btn.textContent = "Escanear botella";
+  }
+}
+
+// ---------- Eventos ----------
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("activo", x === b));
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("activo", s.id === b.dataset.tab));
+}));
+
+document.addEventListener("click", e => {
+  const b = e.target.closest(".ctrl button");
+  if (b && !b.disabled) cambiarStock(b.dataset.id, Number(b.dataset.d));
+});
+
+$("comidas").innerHTML = COMIDAS.map(c => `<button class="btn comida" data-c="${c.id}">${c.nombre}</button>`).join("");
+$("comidas").addEventListener("click", e => {
+  const b = e.target.closest(".comida");
+  if (b) pintarMaridaje(b.dataset.c);
+});
+
+$("btnEscanear").addEventListener("click", escanear);
+$("rMeter").addEventListener("click", () => { cambiarStock(reconocido.id, 1); $("resultado").classList.remove("visible"); });
+$("rSacar").addEventListener("click", () => { cambiarStock(reconocido.id, -1); $("resultado").classList.remove("visible"); });
+
+$("simPuerta").addEventListener("click", () => {
+  estado.puerta.abierta = !estado.puerta.abierta;
+  estado.puerta.segundos = 0;
+  pintarPanel();
+});
+$("simVib").addEventListener("click", () => { picoVibracion = 0.3; });
+if (!SIMULADO) $("simCtrl").style.display = "none";
+
+// ---------- Arranque ----------
+api.iniciar().catch(e => {
+  console.error(e);
+  $("conexion").textContent = "Error de Firebase";
+  $("conexion").className = "badge off";
+  toast("No se pudo conectar con Firebase. Revisa FIREBASE_CONFIG.");
+});
+</script>
+</body>
+</html>
