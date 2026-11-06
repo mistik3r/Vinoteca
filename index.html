@@ -120,6 +120,17 @@
     box-shadow: 0 0 14px var(--tinto); animation: barrido 1.2s linear infinite;
   }
   @keyframes barrido { from { top: 0; } to { top: 100%; } }
+  .visor video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+  .visor.camara { border-style: solid; padding: 0; }
+  .visor.camara video { display: block; }
+  .visor.camara #visorMsg { display: none; }
+  .pred {
+    position: absolute; left: 8px; right: 8px; bottom: 8px; display: none; text-align: left;
+    background: rgba(0, 0, 0, .65); color: var(--text); padding: 6px 10px; border-radius: 8px; font-size: .85rem;
+  }
+  .pred.visible { display: block; }
+  label.auto { display: flex; gap: 8px; align-items: center; margin: 12px 0 4px; font-size: .9rem; color: var(--muted); }
+  label.auto input { width: 18px; height: 18px; accent-color: var(--tinto); }
   .resultado { display: none; }
   .resultado.visible { display: block; }
   .confianza { height: 6px; background: var(--card2); border-radius: 3px; margin: 10px 0 4px; overflow: hidden; }
@@ -211,10 +222,16 @@
   <!-- ============ ESCANEAR ============ -->
   <section id="escanear">
     <div class="visor" id="visor">
-      <div>📷<br><br>Aquí irá la imagen de la cámara del móvil.<br>
-        <small>(De momento el reconocimiento está simulado: Teachable Machine se conectará aquí.)</small></div>
+      <video id="video" playsinline muted autoplay></video>
+      <div id="visorMsg">📷<br><br>Pulsa «Activar cámara» para empezar.</div>
+      <div id="prediccion" class="pred"></div>
     </div>
-    <button class="btn prim" id="btnEscanear" style="width:100%">Escanear botella</button>
+    <div class="fila-btn">
+      <button class="btn" id="btnCamara">Activar cámara</button>
+      <button class="btn prim" id="btnEscanear">Escanear botella</button>
+    </div>
+    <label class="auto"><input type="checkbox" id="auto"> Modo automático: reconoce la botella sola al ponerla delante</label>
+    <div class="sub" id="estadoModelo"></div>
 
     <div class="card resultado" id="resultado" style="margin-top:14px">
       <h3>Botella reconocida</h3>
@@ -264,6 +281,14 @@ const AVISO_PUERTA_S = 30;   // segundos con la puerta abierta antes de avisar
 const NEVERA_CAIDA_S = 20;   // si el ESP32 no actualiza en este tiempo -> "Nevera desconectada"
 const SIM_PASO_MS = 2000;    // ritmo de la simulación
 
+// Teachable Machine: pega aquí el enlace de tu modelo (Export Model -> Upload my model)
+// Ejemplo: "https://teachablemachine.withgoogle.com/models/AbCdEfGhI/"
+// Si lo dejas vacío, el reconocimiento es simulado.
+const MODELO_URL = "https://teachablemachine.withgoogle.com/models/pWNIodeJj/";
+const CLASE_NADA = "nada";        // nombre de la clase del soporte vacío
+const CONFIANZA_MIN = 0.80;       // por debajo de esto, "no reconocido"
+const CONFIANZA_AUTO = 0.90;      // modo automático: confianza necesaria
+
 // =====================================================================
 // BASE DE DATOS DE DEMOSTRACIÓN
 // "id" = nombre de la clase en Teachable Machine (sin espacios ni tildes)
@@ -293,6 +318,10 @@ const CATALOGO = [
     tipo: "blanco", origen: "D.O. Catalunya", uva: "Moscatel y Gewürztraminer", servicio: "7-9 °C",
     marida: ["picante", "marisco", "postre"],
     nota: "Floral y ligeramente dulce, va muy bien con comida picante o asiática." },
+  // --- Botella de prueba para el reconocimiento (bórrala cuando tengas los vinos) ---
+  { id: "ballantines", nombre: "Ballantine's (prueba)", bodega: "Ballantine's",
+    tipo: "tinto", origen: "Escocia", uva: "Whisky de mezcla", servicio: "temperatura ambiente",
+    marida: [], nota: "Botella de prueba para comprobar el reconocimiento." },
 ];
 
 const COMIDAS = [
@@ -392,10 +421,125 @@ const api = {
 // RECONOCIMIENTO DE BOTELLAS
 // Aquí se conectará Teachable Machine. Debe devolver { id, confianza }.
 // =====================================================================
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+let modelo = null, cargandoModelo = null, streamCamara = null, escaneando = false;
+
+function cargarScript(src) {
+  return new Promise((ok, ko) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = ok;
+    s.onerror = () => ko(new Error("No se pudo cargar " + src));
+    document.head.appendChild(s);
+  });
+}
+
+// Carga TensorFlow.js, la librería de Teachable Machine y tu modelo (solo una vez)
+function cargarModelo() {
+  if (!MODELO_URL) return Promise.resolve(null);
+  if (!cargandoModelo) {
+    cargandoModelo = (async () => {
+      $("estadoModelo").textContent = "Cargando modelo de reconocimiento…";
+      if (!window.tmImage) {
+        await cargarScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js");
+        await cargarScript("https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js");
+      }
+      const base = MODELO_URL.endsWith("/") ? MODELO_URL : MODELO_URL + "/";
+      modelo = await tmImage.load(base + "model.json", base + "metadata.json");
+      $("estadoModelo").textContent = `Modelo listo: ${modelo.getClassLabels().join(", ")}`;
+      return modelo;
+    })().catch(e => {
+      console.error(e);
+      cargandoModelo = null;
+      $("estadoModelo").textContent = "No se pudo cargar el modelo. Revisa MODELO_URL.";
+      throw e;
+    });
+  }
+  return cargandoModelo;
+}
+
+async function activarCamara() {
+  if (streamCamara) return;
+  try {
+    streamCamara = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false,
+    });
+  } catch (e) {
+    toast("No se pudo abrir la cámara. Revisa los permisos del navegador.");
+    throw e;
+  }
+  const v = $("video");
+  v.srcObject = streamCamara;
+  await v.play();
+  $("visor").classList.add("camara");
+  $("btnCamara").textContent = "Cámara activa";
+  $("btnCamara").disabled = true;
+  if (!MODELO_URL) $("estadoModelo").textContent = "Sin modelo todavía: el reconocimiento es simulado.";
+  cargarModelo().catch(() => {});
+  bucleEnVivo();
+}
+
+// Una predicción -> { clase, prob } de la clase más probable + lista completa
+async function predecir() {
+  const lista = await modelo.predict($("video"));
+  lista.sort((a, b) => b.probability - a.probability);
+  return { clase: lista[0].className.toLowerCase(), prob: lista[0].probability, lista };
+}
+
+// Botón "Escanear": promedia varios fotogramas para no fallar por uno malo
 async function reconocerBotella() {
-  await new Promise(r => setTimeout(r, 1500));  // simula el tiempo de análisis
-  const v = CATALOGO[Math.floor(Math.random() * CATALOGO.length)];
-  return { id: v.id, confianza: 0.85 + Math.random() * 0.14 };
+  if (!MODELO_URL) {                               // modo simulado
+    await esperar(1500);
+    const v = CATALOGO[Math.floor(Math.random() * CATALOGO.length)];
+    return { id: v.id, confianza: 0.85 + Math.random() * 0.14 };
+  }
+  if (!streamCamara) await activarCamara();
+  await cargarModelo();
+  const suma = {};
+  const N = 10;
+  for (let i = 0; i < N; i++) {
+    const { lista } = await predecir();
+    for (const p of lista) {
+      const c = p.className.toLowerCase();
+      suma[c] = (suma[c] || 0) + p.probability / N;
+    }
+    await esperar(80);
+  }
+  const [id, confianza] = Object.entries(suma).sort((a, b) => b[1] - a[1])[0];
+  return { id, confianza };
+}
+
+// Bucle en vivo: muestra lo que ve el modelo y, en modo automático, reconoce solo
+let racha = { clase: null, n: 0 }, esperandoVacio = false;
+async function bucleEnVivo() {
+  while (streamCamara) {
+    await esperar(250);
+    if (!modelo || escaneando) continue;
+    try {
+      const { clase, prob } = await predecir();
+      const vino = vinoPorId[clase];
+      const nombre = clase === CLASE_NADA ? "Nada" : vino ? vino.nombre : clase;
+      $("prediccion").textContent = `Veo: ${nombre} (${Math.round(prob * 100)} %)`;
+      $("prediccion").classList.add("visible");
+
+      if (clase === CLASE_NADA && prob > 0.7) esperandoVacio = false;   // han quitado la botella
+      if (!$("auto").checked || esperandoVacio || $("resultado").classList.contains("visible")) continue;
+
+      if (vino && prob >= CONFIANZA_AUTO) {
+        racha = racha.clase === clase ? { clase, n: racha.n + 1 } : { clase, n: 1 };
+        if (racha.n >= 4) {                     // ~1 s viendo la misma botella
+          racha = { clase: null, n: 0 };
+          esperandoVacio = true;                // no repetir hasta quitar la botella
+          mostrarResultado({ id: clase, confianza: prob });
+        }
+      } else {
+        racha = { clase: null, n: 0 };
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
 }
 
 // =====================================================================
@@ -531,26 +675,36 @@ function pintarMaridaje(comidaId) {
 
 // ---------- Escáner ----------
 let reconocido = null;
+function mostrarResultado(r) {
+  const v = vinoPorId[r.id];
+  reconocido = v;
+  $("rNombre").textContent = v.nombre;
+  $("rDet").textContent = `${v.tipo === "tinto" ? "Tinto" : "Blanco"} · ${v.origen} · va al compartimento de ${compartimento(v.tipo)}`;
+  $("rBarra").style.width = Math.round(r.confianza * 100) + "%";
+  $("rConf").textContent = `Confianza: ${Math.round(r.confianza * 100)} %`;
+  $("rSacar").disabled = !(estado.stock[v.id] > 0);
+  $("resultado").classList.add("visible");
+  if (navigator.vibrate) navigator.vibrate(80);
+}
+
 async function escanear() {
   const btn = $("btnEscanear");
   btn.disabled = true;
   btn.textContent = "Analizando…";
+  escaneando = true;
   $("visor").classList.add("analizando");
   $("resultado").classList.remove("visible");
   try {
     const r = await reconocerBotella();
-    const v = vinoPorId[r.id];
-    if (!v) throw new Error("Botella desconocida");
-    reconocido = v;
-    $("rNombre").textContent = v.nombre;
-    $("rDet").textContent = `${v.tipo === "tinto" ? "Tinto" : "Blanco"} · ${v.origen} · va al compartimento de ${compartimento(v.tipo)}`;
-    $("rBarra").style.width = Math.round(r.confianza * 100) + "%";
-    $("rConf").textContent = `Confianza: ${Math.round(r.confianza * 100)} %`;
-    $("rSacar").disabled = !(estado.stock[v.id] > 0);
-    $("resultado").classList.add("visible");
+    if (r.id === CLASE_NADA) toast("No veo ninguna botella delante de la cámara.");
+    else if (r.confianza < CONFIANZA_MIN) toast("No estoy seguro de qué botella es. Acércala o gírala un poco.");
+    else if (!vinoPorId[r.id]) toast(`He visto «${r.id}», pero no está en el catálogo.`);
+    else mostrarResultado(r);
   } catch (e) {
-    toast("No he reconocido la botella. Prueba otra vez.");
+    console.error(e);
+    toast("No he podido analizar la imagen. Prueba otra vez.");
   } finally {
+    escaneando = false;
     $("visor").classList.remove("analizando");
     btn.disabled = false;
     btn.textContent = "Escanear botella";
@@ -575,6 +729,7 @@ $("comidas").addEventListener("click", e => {
 });
 
 $("btnEscanear").addEventListener("click", escanear);
+$("btnCamara").addEventListener("click", () => activarCamara().catch(() => {}));
 $("rMeter").addEventListener("click", () => { cambiarStock(reconocido.id, 1); $("resultado").classList.remove("visible"); });
 $("rSacar").addEventListener("click", () => { cambiarStock(reconocido.id, -1); $("resultado").classList.remove("visible"); });
 
